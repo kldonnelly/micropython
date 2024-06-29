@@ -7,22 +7,32 @@ from observer_analog import AnalogPins
 from observer_vesc import VESC
 import ble_simple_peripheral
 import neopixel_demo
-from log import Log
+from log import Log, SetLoglevel
 import micropython_dotstar as dotstar
 from lcd_i2c import LCD
 from ssd1306 import SSD1306_I2C
 from Display import DisplayDispatcher,  DisplayOLED, DisplayNeopixel, Display4LineLCD
 import us2n
+from UartShared import UartShared
+from machine import Timer
+
 
 I2C_ADDR = 0x27
 NUM_ROWS = 4
 NUM_COLS = 20
 
 # initializing the I2C method for ESP8266
-i2c = I2C(scl=Pin(7), sda=Pin(6), freq=10000) 
+i2c = I2C(scl=Pin(7), sda=Pin(6), freq=10000)
+
 oled = None
 lcd = None
 _np = None
+_vs = None
+us = None
+
+SetLoglevel(4)
+
+
 devices = i2c.scan()
 if len(devices) == 0:
     Log("No i2c device !")
@@ -45,7 +55,7 @@ _uart = UART(1, 115200, tx=21, rx=20)      # init with given baudrate
 
 _sa = AnalogPins([3, 2])
 
-server = us2n.server('us2n.json', _uart, lcd)
+
 
 
 # _np = neopixel.NeoPixel(Pin(10), 69)
@@ -53,8 +63,15 @@ server = us2n.server('us2n.json', _uart, lcd)
 if _np:
     neopixel_demo.demo(_np)
 
-_vs = VESC(_uart)
+us = UartShared(_uart)
 
+if us:
+    _vs = VESC(us)
+
+p = ble_simple_peripheral.ble_main(us)
+
+#server = us2n.server('us2n.json', us)
+#server.bind()
 
 if oled:
     oled.text("oled started", 0, 0, 1)
@@ -64,7 +81,7 @@ if lcd:
     lcd.set_cursor(0, 1)
     lcd.print("Started LCD")
 
-if lcd or oled: 
+if lcd or oled or p: 
     if oled:
         ds = DisplayOLED(oled)
     if lcd:
@@ -76,8 +93,25 @@ if lcd or oled:
         ds = DisplayNeopixel(_np)
         d.append(ds)
 
-    _vs.attach(d.vo)
-    _sa.attach(d.ao)
+    if _vs:
+        _vs.attach(d.vo)
+
+    if _sa:
+        _sa.attach(d.ao)
+
+
+# read uart
+def update(t):
+    _vs.update() 
+    _sa.update()
+    p.update()
+    # server.update()
+
+
+tim1 = Timer(0)
+tim1.init(period=500, mode=Timer.PERIODIC, callback=update)
+LOGLEVEL = 4
+'''''''''
     _wdt = WDT(timeout=4000)  # enable it with a timeout of 2s
     count = 0
     while True:
@@ -116,7 +150,7 @@ if p:
         else:
             time.sleep(1)
 
-
+'''''
 
 
 

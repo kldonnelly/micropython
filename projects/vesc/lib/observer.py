@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from random import randrange
+from typing import List
 
 
+# https://refactoring.guru/design-patterns/observer/python/example
 class Observer(ABC):
     """
     The Observer interface declares the update method, used by subjects.

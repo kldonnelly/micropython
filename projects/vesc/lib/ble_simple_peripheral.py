@@ -6,7 +6,8 @@ import struct
 from ble_advertising import advertising_payload
 from observer import Subject, Observer
 from log import Log
-
+from UartShared import UartObserver
+from machine import Timer
 from micropython import const
 
 _IRQ_CENTRAL_CONNECT = const(1)
@@ -44,19 +45,24 @@ _VOLTAGE_IO_SERVICE = (_VOLTAGE_IO_UUID, (_VOLTAGE_IN, _VOLTAGE_OUT, _NEOPIXEL, 
 
 
 class BLESimplePeripheral(Observer):
-    def __init__(self, ble, name="mpy-uart"):
+    def __init__(self, ble, name="mpy-uart", uart_shared=None):
         self._ble = ble
         self._ble.active(True)
         self._ble.config(mtu=500)
+        self.uart_shared = uart_shared
         # self._ble.config(rxbuf=512)
         self._ble.irq(self._irq)
         self.ao = self.analog_observer(self)
         self.vo = self.vesc_observer(self)
-    
+        self.uo = self.uart_observer(self, 2, [], 0)
+        #tim1 = Timer(2)
+        #tim1.init(period=100, mode=Timer.PERIODIC, callback=self.update)
+
         ((self._handle_tx, self._handle_rx,), (self._handle_i, self._handle_o, self._handle_np, self._handle_iic), ) = self._ble.gatts_register_services((_UART_SERVICE, _VOLTAGE_IO_SERVICE, ))
         self._connections = set()
         self._write_uart_callback = None
         self._write_neopixel_callback = None
+        Log("name=", name)
         self._payload = advertising_payload(name=name, services=[_UART_UUID])
         self._advertise()
 
@@ -66,12 +72,16 @@ class BLESimplePeripheral(Observer):
             conn_handle, _, _ = data
             Log("New connection", conn_handle)
             self._connections.add(conn_handle)
+            if self._connections:
+                self.uart_shared.attach(self.uo)
             self._advertise()
         elif event == _IRQ_CENTRAL_DISCONNECT:
             conn_handle, _, _ = data
             Log("Disconnected", conn_handle)
             self._connections.remove(conn_handle)
             # Start advertising again to allow a new connection.
+            if not self._connections:
+                self.uart_shared.detach(self.uo)
             self._advertise()
         elif event == _IRQ_GATTS_WRITE:
             conn_handle, value_handle = data
@@ -96,7 +106,11 @@ class BLESimplePeripheral(Observer):
 
     def _advertise(self, interval_us=500000):
         Log("Starting advertising")
-        self._ble.gap_advertise(interval_us, adv_data=self._payload)
+        try:
+            self._ble.gap_advertise(interval_us, adv_data=self._payload)
+        except OSError as error:
+            Log(error.errno) 
+            
 
     def on_write_uart(self, callback):
         self._write_uart_callback = callback
@@ -107,14 +121,12 @@ class BLESimplePeripheral(Observer):
     def on_write_iic(self, callback):
         self._write_iic_callback = callback
 
-    def update(self, subject: Subject) -> None:
+    def update(self) -> int:
+        len = -1
+        if self.is_connected():
         # (f"ble Observer: My value for pin {subject._pins[idx]} has just changed to: {value}")
-        data = struct.pack("<ll", subject._values[0], subject._values[1])
-        for conn_handle in self._connections:
-            try:
-                self._ble.gatts_notify(conn_handle, self._handle_i, data)
-            except OSError:
-                Log(1, "failed to update with gatts_notify")
+            len = self.uart_shared.read(self.uo)
+        return len
 
     class analog_observer(Observer):
 
@@ -130,6 +142,17 @@ class BLESimplePeripheral(Observer):
                 except OSError:
                     Log(1, "failed to update with gatts_notify")
 
+    class uart_observer(UartObserver):
+
+        def __init__(self, parent, priority: int, write_bytes, read_length: int) -> None:
+            self.parent = parent
+
+            super().__init__(priority, write_bytes, read_length)
+
+        def update(self, subject: Subject) -> None:
+            buffer = subject._buffer
+            self.parent.send_uart(buffer)
+        
     class vesc_observer(Observer):
 
         def __init__(self, parent):
@@ -140,16 +163,16 @@ class BLESimplePeripheral(Observer):
             self.parent.send_uart(buffer)
                
 
-def ble_main(hwuart, sa=0, np=0, iic=0):
+def ble_main(hw_uart, sa=0, np=0, iic=0):
     ble = bluetooth.BLE()
-    p = BLESimplePeripheral(ble)
+    p = BLESimplePeripheral(ble, "vesc", hw_uart)
    
     if sa != 0:
         sa.attach(p)
 
     def on_rx(v):
-        Log(4, "RX", v)
-        hwuart.write(v)
+        res = hw_uart.write(p.uo, v)
+        Log(3, "RX", v, res)
 
     def on_n(v):
         if np != 0:

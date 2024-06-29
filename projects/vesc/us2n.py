@@ -5,6 +5,8 @@ import time
 import select
 import socket
 import network
+from observer import Subject
+from UartShared import UartObserver
 
 print_ = print
 VERBOSE = 1
@@ -45,7 +47,7 @@ def parse_bind_address(addr, default=None):
 
 class Bridge:
 
-    def __init__(self, config, _uart):
+    def __init__(self, config, _uart, poller):
         super().__init__()
         self.config = config
         self.uart = _uart
@@ -55,61 +57,95 @@ class Bridge:
         self.bind_port = self.address[1]
         self.client = None
         self.client_address = None
+        self.uo = self.uart_observer(self, 3, [], 0)
+        self.poller = poller
+      
 
     def bind(self):
-        tcp = socket.socket()
-        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    #    tcp.setblocking(False)
-        tcp.bind(self.address)
-        tcp.listen(5)
+        self.tcp = socket.socket()
+        self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.tcp.setblocking(0)
+        self.tcp.bind(self.address)
+        self.tcp.listen(1)
+        self.poller.register(self.tcp, select.POLLIN)
         print('Bridge listening at TCP({0}) for UART({1})'
               .format(self.bind_port, self.uart_port))
-        self.tcp = tcp
-        return tcp
-
-    def fill(self, fds):
+        
+    def fill(self):
+        fds = []
         if self.uart is not None:
-            fds.append(self.uart)
+            fds.append(self.uart._uart)
+           
         if self.tcp is not None:
             fds.append(self.tcp)
+           
         if self.client is not None:
             fds.append(self.client)
+            
         return fds
+    
+    class uart_observer(UartObserver):
+
+        def __init__(self, parent, priority: int, write_bytes, read_length: int) -> None:
+            self.parent = parent
+
+            super().__init__(priority, write_bytes, read_length)
+
+        def update(self, subject: Subject) -> None:   
+            if self.parent.client:
+                try:
+                    self.parent.client.sendall(subject._buffer)
+                    print('UART({0})->TCP({1}) {2}'.format(self.parent.uart_port, self.parent.bind_port, subject._buffer))
+                except OSError:
+                    self.parent.close_client()
+
 
     def handle(self, fd):
         if fd == self.tcp:
             self.close_client()
             self.open_client()
         elif fd == self.client:
-            data = self.client.recv(4096)
+            data = None
+            try:
+                data = self.client.recv(4096)
+            except OSError:
+                print('Client ', str(self.client_address), ' disconnected')
+                self.close_client()
+
             if data:
                 print('TCP({0})->UART({1}) {2}'.format(self.bind_port,
                                                        self.uart_port, data))
-                self.uart.write(data)
+                # self.uart.write(data)
+                self.uart.write(self.uo, data)
             else:
-                print('Client ', self.client_address, ' disconnected')
+                print('Client ', str(self.client_address), ' disconnected')
                 self.close_client()
-        elif fd == self.uart:
-            data = self.uart.read()
-            print('UART({0})->TCP({1}) {2}'.format(self.uart_port,
-                                                   self.bind_port, data))
-            self.client.sendall(data)
+        elif fd == self.uart._uart and self.client is not None:
+            # data = self.uart.read()
+            len = self.uart.read(self.uo)
+          
+            # self.client.sendall(data)
 
     def close_client(self):
         if self.client is not None:
-            print('Closing client ', self.client_address)
+            print('Closing client ', str(self.client_address))
             self.client.close()
             self.client = None
-            self.client_address = None   
+            self.client_address = None
+            self.uart.detach(self.uo)
 
     def open_client(self):
         self.client, self.client_address = self.tcp.accept()
-        print('Accepted connection from ', self.client_address)
+        self.poller.register(self.client, select.POLLIN)
+
+        print('Accepted connection from ', str(self.client_address))
+        self.uart.attach(self.uo)
 
     def close(self):
         self.close_client()
         if self.tcp is not None:
             print('Closing TCP server {0}...'.format(self.address))
+            self.poller.unregister(self.client)
             self.tcp.close()
             self.tcp = None
 
@@ -119,6 +155,9 @@ class S2NServer:
     def __init__(self, config, _uart):
         self.config = config
         self.uart = _uart
+        self.bridges = []
+        self.poller = select.poll()
+        self.poller.register(self.uart._uart, select.POLLIN)
 
     def serve_forever(self):
         try:
@@ -127,12 +166,28 @@ class S2NServer:
             print('Ctrl-C pressed. Bailing out')
 
     def bind(self):
-        bridges = []
+        self.bridges = []
         for config in self.config['bridges']:
-            bridge = Bridge(config, self.uart)
+            bridge = Bridge(config, self.uart, self.poller)
             bridge.bind()
-            bridges.append(bridge)
-        return bridges
+            self.bridges.append(bridge)
+     
+    def update(self):
+        events = self.poller.poll(100)
+        for file in events:
+        # file is a tuple
+            for bridge in self.bridges:
+                bridge.handle(file[0])
+    '''''''''
+        rlist, _, xlist = select.select(fds, (), fds, 10)
+        
+        if xlist:
+            print('Errors. bailing out')
+            return
+        for fd in rlist:
+            for bridge in self.bridges:
+                bridge.handle(fd)
+    '''
 
     def _serve_forever(self):
         bridges = self.bind()
@@ -185,7 +240,7 @@ def WLANStation(config, name):
             print('Failed to connect wifi station after {0}ms. I give up'
                   .format(t))
             return sta
-    print('Station at:'. str(sta.ifconfig()[0]))
+    print('Station at:' + str(sta.ifconfig()[0]))
     return sta
 
 

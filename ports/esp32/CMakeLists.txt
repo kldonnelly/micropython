@@ -59,5 +59,8 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # Set the location of the main component for the project (one per target).
 list(APPEND EXTRA_COMPONENT_DIRS main_${IDF_TARGET})
 
+message("showing extra components dir")
+message( ${EXTRA_COMPONENT_DIRS})
+
 # Define the project.
 project(micropython)

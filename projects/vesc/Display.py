@@ -2,9 +2,12 @@ from observer import Subject, Observer
 from lcd_i2c import LCD
 from ssd1306 import SSD1306_I2C
 from neopixel import NeoPixel
-
+from log import Log
 
 class VESCDisplay:
+
+    def Message(self, msg):
+        pass
 
     def Current(self, icurrent, mcurrent):
         pass
@@ -76,18 +79,26 @@ class Display4LineLCD(VESCDisplay):
         # self._lcd.no_backlight()
         super().__init__()
 
+    def Message(self, msg):
+        self._lcd.clear()
+        self._lcd.set_cursor(0, 0)
+        self._lcd.print(msg)
+        self.active = 1000
+
+
     def clear(self):
         for i, val in enumerate(self.cs):
             self.cs[i] = ' '
         if self.active < 1:
             self._lcd.no_backlight()
+            self._lcd.begin()
         elif self.active > 50:
             self._lcd.backlight()
 
     def rpm(self, rpm):
         text = "                    "
         if rpm > 0:
-            text = ">" * int(rpm/40)
+            text = ">" * int(rpm/20)
             self.active = 100
         elif rpm == 0:   
             self.active -= 1
@@ -124,7 +135,7 @@ class Display4LineLCD(VESCDisplay):
         self._lcd.set_cursor(0, 1)
         self._lcd.print(text)     
         self._lcd.set_cursor(8, 2)
-        self._lcd.print("ic:" + str(icurrent))
+        self._lcd.print("ic:" + str(icurrent) + "   ")
         
     
     def throttle(self, th):
@@ -246,25 +257,6 @@ class DisplayDispatcher:
         self._ds.append(ds)
 
 
-        
-'''''''''''''''
-    def __setitem__(self, key, item):
-        _item = str(item)
-        if key == "vin" and item:
-            self._ds.voltage(_item)
-        elif key == "rpm":
-            self.np_rpm(item)
-            self._ds.rpm(_item)
-        elif key == "avg_input_current" and item:
-            if self._oled:
-                self._oled.text("ic:" + _item, 0, 24, 1)        
-        elif key == "avg_motor_current" and item:
-            if self._oled:
-                self._oled.text("mc:" + _item, 60, 24, 1)
-            self.np_current(item)
-'''''
-
-
 class vesc_obsrver(Observer):
 
     def __init__(self, parent: DisplayDispatcher):
@@ -273,27 +265,33 @@ class vesc_obsrver(Observer):
     def update(self, subject: Subject) -> None:
         for ds in self.parent._ds:
             ds.clear()
-            ds.voltage(subject.response.v_in)
-            ds.rpm(int(subject.response.rpm/11))
-            ds.Current(subject.response.avg_input_current, subject.response.avg_motor_current)
-            ds.show()
-        # self.parent._ds.Current(subject.response.v_in)
-        # self.parent["vin"] = subject.response.v_in
-        # self.parent["rpm"] = int(subject.response.rpm/11)  # erpm/poles
-        # self.parent["avg_input_current"] = subject.response.avg_input_current
-        # self.parent["avg_motor_current"] = subject.response.avg_motor_current
-        # self.parent._ds.show()
+            if isinstance(subject, str):
+                ds.Message(subject)
+                ds.show()
+            else:
+                try:
+                    ds.voltage(subject.v_in)
+                    ds.rpm(int(subject.rpm/44))
+                    ds.Current(subject.avg_input_current, subject.avg_motor_current)
+                except OSError as e:
+                    Log(3, e, subject)
+                else:
+                    ds.show()
+0
+      
              
-
 class analog_observer(Observer):
 
     def __init__(self, parent: DisplayDispatcher):
         self.parent = parent
 
     def update(self, subject: Subject) -> None:
-        for _ds in self.parent._ds:
-            _ds.throttle(int(subject._values[0]/1000))
-            _ds.brake(int(subject._values[1]/1000))
+        try:
+            for _ds in self.parent._ds:
+                _ds.throttle(int(subject._values[0]/1000))
+                _ds.brake(int(subject._values[1]/1000))
+        except OSError as e:
+            Log(1, e, subject)
 
 
          
